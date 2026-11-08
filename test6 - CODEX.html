@@ -424,7 +424,7 @@ dd { margin:0; font-variant-numeric:tabular-nums; font-weight:500; }
   const pageHeading = document.querySelector('h1');
   if (pageHeading) pageHeading.textContent = '\u041a\u043e\u043d\u0432\u0435\u0440\u0442\u0435\u0440 \u0432\u0430\u043b\u044e\u0442';
   const QUOTE_TTL_MS = 30000;
-  const state = { balances:{RUB:5000000,USDT:25040,EUR:125000,USD:32000,GBP:8000}, from:'RUB', to:'USDT', rate:9240, oldRate:9240, quoteId:'', quoteCreatedAt:0, quoteSequence:1, expiresAt:0, quoteExpired:false, touched:false, busy:false, pendingRate:false, changed:false, success:false, resultOutcome:null, sequence:1245 };
+  const state = { balances:{RUB:5000000,USDT:25040,EUR:125000,USD:32000,GBP:8000}, from:'RUB', to:'USDT', rate:9240, oldRate:9240, quoteId:'', quoteCreatedAt:0, quoteSequence:1, expiresAt:0, quoteExpired:false, touched:false, busy:false, pendingRate:false, changed:false, success:false, resultOutcome:null, sequence:1245, serverEnabled:false };
   const numberFormat = new Intl.NumberFormat('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2});
   const format = cents => numberFormat.format(cents / 100);
   const money = (cents,currency,symbol=false) => format(cents) + '\u00a0' + (symbol && currency === 'RUB' ? '₽' : currency);
@@ -590,6 +590,32 @@ dd { margin:0; font-variant-numeric:tabular-nums; font-weight:500; }
       $('exchange-card').hidden=true; $('result-card').hidden=false; $('result-title').focus();
       announce('Операция отклонена. Средства не списаны.'); return;
     }
+    if (state.serverEnabled && scenario !== 'rate-change') {
+      try {
+        const key = crypto.randomUUID();
+        const response = await fetch('/api/v1/exchange-orders', {
+          method:'POST', headers:{'Content-Type':'application/json','Idempotency-Key':key},
+          body:JSON.stringify({sourceCurrency:snapshot.from,targetCurrency:snapshot.to,sourceMinor:snapshot.amount})
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || 'Обмен отклонён');
+        snapshot.received=result.order.targetMinor; snapshot.fee=result.order.feeMinor; snapshot.rate=result.order.rate;
+        state.balances=result.balances;
+        state.busy=false; state.pendingRate=false; state.success=true; state.resultOutcome='success'; state.expiresAt=0;
+        $('result-card').classList.remove('is-declined'); $('result-icon').setAttribute('href','#i-check');
+        $('result-title').textContent='Обмен выполнен'; $('result-lead').textContent='Операция сохранена в базе SQLite';
+        $('result-amount').hidden=false; $('receipt').hidden=false; $('done').textContent='Вернуться в кошелёк';
+        $('result-amount').textContent=money(snapshot.received,snapshot.to);
+        $('result-debit').textContent=money(snapshot.amount,snapshot.from);
+        $('result-credit').textContent=money(snapshot.received,snapshot.to);
+        $('result-rate').textContent=rateText(snapshot.rate); $('result-fee').textContent=money(snapshot.fee,snapshot.from);
+        $('result-number').textContent=result.order.orderId;
+        renderBalances(); $('exchange-card').hidden=true; $('result-card').hidden=false;
+        $('result-title').focus(); announce('Обмен выполнен и сохранён. Получено ' + money(snapshot.received,snapshot.to) + '.'); return;
+      } catch (error) {
+        state.busy=false; render(); showFeedback(error.message); announce(error.message); return;
+      }
+    }
     state.balances[snapshot.from]-=snapshot.amount;
     state.balances[snapshot.to]+=snapshot.received;
     state.busy=false; state.pendingRate=false; state.success=true; state.resultOutcome='success'; state.expiresAt=0;
@@ -638,6 +664,15 @@ dd { margin:0; font-variant-numeric:tabular-nums; font-weight:500; }
   issueQuote();
   if (scenario === 'expired') { state.expiresAt=Date.now()-1; state.quoteExpired=true; }
   render();
+  fetch('/api/v1/wallet').then(response => {
+    if (!response.ok) throw new Error('API недоступен');
+    return response.json();
+  }).then(wallet => {
+    state.balances=wallet.balances; state.serverEnabled=true; renderBalances();
+    announce('Баланс загружен из SQLite.');
+  }).catch(() => {
+    // Opening the HTML directly keeps the original standalone mock prototype usable.
+  });
   function tickQuote() {
     if (state.success || state.busy) return;
     if (!remaining()) {
@@ -661,3 +696,4 @@ dd { margin:0; font-variant-numeric:tabular-nums; font-weight:500; }
 
 
 </body></html>
+
